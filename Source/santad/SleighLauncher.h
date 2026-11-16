@@ -68,7 +68,7 @@ class SleighLauncher {
                      const std::vector<std::string>& filter_expressions,
                      uint32_t timeout_seconds);
 
-  // Signal scan: hand input_fd to a Sleigh child along with the detection
+  // Signal scan: hand input_fds to a Sleigh child along with the detection
   // signals to evaluate (each a serialized santa.common.v1.Signal), capture
   // Sleigh's stdout, and parse it as a SleighResponse. Sleigh uploads nothing;
   // it only reports which signals matched. An empty/unparseable stdout, or a
@@ -77,13 +77,12 @@ class SleighLauncher {
   // from configuration, so Sleigh redacts reported args/envs as it does
   // exports.
   //
-  // input_fd must be an already-open, readable fd positioned at offset 0. The
-  // caller retains ownership of input_fd (this method scans a dup of it);
-  // holding that fd open keeps the spool file's data readable even after the
-  // telemetry exporter unlinks the path, so the scan and export need no
-  // coordination.
+  // Each input fd must be readable and positioned at offset 0. Files are passed
+  // in scan order. The caller retains ownership; this method duplicates the
+  // fds. Holding them open keeps the data readable even after the telemetry
+  // exporter unlinks the paths, so the scan and export need no coordination.
   virtual absl::StatusOr<::santa::telemetry::v1::SleighSignalScanResponse>
-  LaunchSignalScan(int input_fd,
+  LaunchSignalScan(const std::vector<int>& input_fds,
                    const std::vector<std::string>& serialized_signals,
                    uint32_t timeout_seconds);
 
@@ -107,6 +106,8 @@ class SleighLauncher {
   virtual absl::Status VerifySleighCodeSignature();
 
  private:
+  friend class SleighLauncherPeer;
+
   enum class ChildCredentialMode {
     kDropRoot,
     kRetain,
@@ -128,7 +129,7 @@ class SleighLauncher {
       const std::vector<std::string>& filter_expressions);
 
   absl::StatusOr<std::string> SerializeSignalScanConfig(
-      int input_fd, int state_db_fd,
+      const std::vector<int>& input_fds, int state_db_fd,
       const std::vector<std::string>& serialized_signals);
 
   absl::StatusOr<std::string> SerializePackageInventoryScanConfig(

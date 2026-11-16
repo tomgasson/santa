@@ -27,6 +27,17 @@
 #include "common/packageinventory.pb.h"
 #include "telemetry/sleighconfig.pb.h"
 
+namespace santa {
+class SleighLauncherPeer {
+ public:
+  static absl::StatusOr<std::string> SerializeSignalScan(
+      SleighLauncher& launcher, const std::vector<int>& fds, int state_fd,
+      const std::vector<std::string>& signals = {}) {
+    return launcher.SerializeSignalScanConfig(fds, state_fd, signals);
+  }
+};
+}  // namespace santa
+
 // These tests drive the real fork/stdin/stdout machinery in SleighLauncher in any
 // compilation mode: TestableSleighLauncher overrides the code-signature check (which
 // production enforces outside DEBUG builds) so the unsigned stub sleigh is accepted.
@@ -44,6 +55,51 @@ class TestableSleighLauncher : public santa::SleighLauncher {
 @end
 
 @implementation SleighLauncherTest
+
+- (void)testSignalScanSerializesAllDescriptorsInOrder {
+  TestableSleighLauncher launcher("unused");
+  auto serialized = santa::SleighLauncherPeer::SerializeSignalScan(launcher, {17, 23, 42}, 99);
+  XCTAssertTrue(serialized.ok());
+  if (!serialized.ok()) return;
+  ::santa::telemetry::v1::SleighConfig config;
+  XCTAssertTrue(config.ParseFromString(*serialized));
+  XCTAssertTrue(config.has_signal_scan());
+  const auto& scan = config.signal_scan();
+  XCTAssertEqual(scan.input_fds_size(), 3);
+  XCTAssertEqual(scan.input_fds(0), 17);
+  XCTAssertEqual(scan.input_fds(1), 23);
+  XCTAssertEqual(scan.input_fds(2), 42);
+  XCTAssertEqual(scan.state_db_fd(), 99);
+}
+
+- (void)testSignalScanRejectsMalformedSignal {
+  TestableSleighLauncher launcher("unused");
+  auto serialized = santa::SleighLauncherPeer::SerializeSignalScan(launcher, {17, 23}, 99,
+                                                                   {std::string("\xff", 1)});
+  XCTAssertTrue(absl::IsInvalidArgument(serialized.status()));
+}
+
+- (void)testSignalScanRejectsEmptyBatch {
+  TestableSleighLauncher launcher("unused");
+  auto response = launcher.LaunchSignalScan({}, {}, 10);
+  XCTAssertTrue(absl::IsInvalidArgument(response.status()));
+}
+
+- (void)testSignalScanPartialDupFailurePreservesCallerAndReleasesDuplicate {
+  TestableSleighLauncher launcher("/usr/bin/true");
+  int fd = open("/dev/null", O_RDONLY);
+  XCTAssertGreaterThanOrEqual(fd, 0);
+  // Observe the next free fd without retaining it. The first duplicate should
+  // use it; failure on the second input must release that duplicate.
+  int next_fd = dup(fd);
+  XCTAssertGreaterThanOrEqual(next_fd, 0);
+  close(next_fd);
+  auto response = launcher.LaunchSignalScan({fd, -1}, {}, 10);
+  XCTAssertFalse(response.ok());
+  XCTAssertNotEqual(fcntl(fd, F_GETFD), -1);
+  XCTAssertEqual(fcntl(next_fd, F_GETFD), -1);
+  close(fd);
+}
 
 // Writes an executable /bin/sh stub at a unique temp path and returns the path.
 - (NSString*)writeStubWithBody:(NSString*)body {

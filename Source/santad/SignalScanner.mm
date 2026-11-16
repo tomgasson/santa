@@ -14,6 +14,9 @@
 
 #include "Source/santad/SignalScanner.h"
 
+#include <algorithm>
+#include <limits>
+
 #import "Source/common/SNTLogging.h"
 #include "absl/cleanup/cleanup.h"
 #include "absl/status/status.h"
@@ -78,29 +81,45 @@ void SignalScanner::ScanFile(std::string path, std::shared_ptr<ScopedFile> file)
   }
 
   auto shared_this = shared_from_this();
+  absl::MutexLock lock(lock_);
+  // Coalesce inputs only until the queued scan begins.
+  if (pending_batch_ && pending_batch_->size() < kMaxFilesPerBatch) {
+    pending_batch_->push_back(std::move(file));
+    return;
+  }
+  auto batch = std::make_shared<ScanBatch>();
+  batch->push_back(std::move(file));
+  pending_batch_ = batch;
   dispatch_async(scan_q_, ^{
-    absl::Cleanup decrement = [shared_this] {
-      shared_this->in_flight_.fetch_sub(1, std::memory_order_relaxed);
+    absl::Cleanup decrement = [shared_this, batch] {
+      shared_this->in_flight_.fetch_sub(static_cast<int>(batch->size()), std::memory_order_relaxed);
     };
 
     std::vector<std::string> signals;
     {
       absl::MutexLock lock(shared_this->lock_);
+      if (shared_this->pending_batch_ == batch) shared_this->pending_batch_.reset();
       signals = shared_this->signals_;
     }
 
-    // Nothing configured: don't even launch Sleigh. (The captured `file` closes on return.)
+    // Nothing configured: don't even launch Sleigh.
     if (signals.empty()) {
       return;
     }
 
+    std::vector<int> input_fds;
+    input_fds.reserve(batch->size());
+    for (const auto& input : *batch)
+      input_fds.push_back(input->UnsafeFD());
+    uint32_t timeout = static_cast<uint32_t>(
+        std::min<uint64_t>(uint64_t(shared_this->timeout_secs_) * batch->size(),
+                           std::numeric_limits<uint32_t>::max()));
     absl::StatusOr<::santa::telemetry::v1::SleighSignalScanResponse> response =
-        shared_this->sleigh_launcher_->LaunchSignalScan(file->UnsafeFD(), signals,
-                                                        shared_this->timeout_secs_);
+        shared_this->sleigh_launcher_->LaunchSignalScan(input_fds, signals, timeout);
     if (!response.ok()) {
       // Sleigh not installed (e.g. lite package) is accepted; don't warn.
       if (!absl::IsNotFound(response.status())) {
-        LOGW(@"Signal scan failed for %s: %s", path.c_str(),
+        LOGW(@"Signal scan failed for %zu files starting with %s: %s", batch->size(), path.c_str(),
              std::string(response.status().message()).c_str());
       }
       return;

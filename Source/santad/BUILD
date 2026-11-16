@@ -1101,6 +1101,20 @@ objc_library(
 )
 
 santa_unit_test(
+    name = "SignalScannerTest",
+    srcs = ["SignalScannerTest.mm"],
+    deps = [
+        ":SignalScanner",
+        ":SleighLauncher",
+        "//Source/common:SNTSignal",
+        "//Source/common:SNTStoredSignalReport",
+        "//Source/common:ScopedFile",
+        "@abseil-cpp//absl/status:statusor",
+        "@northpolesec_protos//telemetry:sleighconfig_cc_proto",
+    ],
+)
+
+santa_unit_test(
     name = "SleighLauncherTest",
     srcs = ["SleighLauncherTest.mm"],
     deps = [
@@ -2331,6 +2345,7 @@ test_suite(
         ":SNTTimedRuleKillsTest",
         ":SandboxExpectationsTest",
         ":SantadTest",
+        ":SignalScannerTest",
         ":SleighLauncherTest",
         ":TTYWriterTest",
         ":TemporaryAdminModeTest",

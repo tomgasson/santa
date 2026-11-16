@@ -34,8 +34,8 @@ namespace santa {
 
 // Runs Sleigh signal scans over closed telemetry spool files. Holds the current
 // set of synced detection signals in memory (refreshed via SetSignals when the
-// signal_rules config changes), and on each closed spool file runs a Sleigh
-// signal scan, handing the resulting reports to a caller-supplied handler
+// signal_rules config changes), and scans closed spool files in bounded batches,
+// handing the resulting reports to a caller-supplied handler
 // (which persists + uploads them).
 //
 // Scans run on a private serial queue so they never block the spool's queue.
@@ -63,6 +63,11 @@ class SignalScanner : public std::enable_shared_from_this<SignalScanner> {
   void ScanFile(std::string path, std::shared_ptr<ScopedFile> file);
 
  private:
+  friend class SignalScannerPeer;
+
+  using ScanBatch = std::vector<std::shared_ptr<ScopedFile>>;
+  static constexpr size_t kMaxFilesPerBatch = 8;
+
   // Private: SignalScanner relies on shared_from_this(), so it must only ever be owned by a
   // std::shared_ptr. Construct via Create().
   SignalScanner(std::unique_ptr<SleighLauncher> sleigh_launcher, uint32_t timeout_secs,
@@ -82,6 +87,7 @@ class SignalScanner : public std::enable_shared_from_this<SignalScanner> {
   dispatch_queue_t scan_q_;
   std::atomic<int> in_flight_{0};
   absl::Mutex lock_;
+  std::shared_ptr<ScanBatch> pending_batch_ ABSL_GUARDED_BY(lock_);
   // Each entry is a serialized santa.common.v1.Signal.
   std::vector<std::string> signals_ ABSL_GUARDED_BY(lock_);
 };
